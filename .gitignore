@@ -9,6 +9,7 @@
 .env*.local
 .env
 .supabase.credentials.local
+supabase/.temp/
 
 # logs
 npm-debug.log*
