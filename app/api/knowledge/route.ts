@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getOpenAIClient } from "@/lib/openai";
+import { createChatCompletionWithFallback } from "@/lib/openai";
 import { knowledgeSystemPrompt } from "@/lib/prompts/knowledge";
+import { chunkText, embedMany } from "@/lib/rag";
 import { getSupabaseAdmin } from "@/lib/supabase";
 
 const bodySchema = z.object({
@@ -18,10 +19,8 @@ const llmOutputSchema = z.object({
 const idSchema = z.string().uuid();
 
 async function generateKnowledgeMetadata(title: string, rawText: string) {
-  const openai = getOpenAIClient();
-  const preferredModel = process.env.OPENAI_MODEL ?? "gpt-4.1-mini";
-  const payload = {
-    response_format: { type: "json_object" as const },
+  return createChatCompletionWithFallback({
+    response_format: { type: "json_object" },
     temperature: 0.2,
     messages: [
       { role: "system" as const, content: knowledgeSystemPrompt },
@@ -30,16 +29,7 @@ async function generateKnowledgeMetadata(title: string, rawText: string) {
         content: `Título: ${title}\n\nTexto bruto:\n${rawText}`,
       },
     ],
-  };
-
-  try {
-    return await openai.chat.completions.create({ model: preferredModel, ...payload });
-  } catch (error) {
-    const maybeMessage = error instanceof Error ? error.message : "";
-    const shouldFallback = preferredModel !== "gpt-4.1-mini" && maybeMessage.toLowerCase().includes("model");
-    if (!shouldFallback) throw error;
-    return openai.chat.completions.create({ model: "gpt-4.1-mini", ...payload });
-  }
+  });
 }
 
 export async function GET() {
@@ -72,6 +62,12 @@ export async function POST(request: Request) {
     if (!parsedOutput.success) return NextResponse.json({ error: "Saída da IA em formato inválido." }, { status: 502 });
 
     const { shortSummary, usageGuidance, suggestedQuestions } = parsedOutput.data;
+    const chunks = chunkText(rawText);
+    if (chunks.length === 0) {
+      return NextResponse.json({ error: "Não foi possível gerar chunks da base de conhecimento." }, { status: 400 });
+    }
+
+    const chunkEmbeddings = await embedMany(chunks.map((chunk) => chunk.chunkText));
     const baseInsert = await supabaseAdmin
       .from("knowledge_bases")
       .insert({ title, raw_text: rawText, short_summary: shortSummary, usage_guidance: usageGuidance })
@@ -92,6 +88,25 @@ export async function POST(request: Request) {
       console.error("suggested_questions_insert_error", questionsInsert.error);
       await supabaseAdmin.from("knowledge_bases").delete().eq("id", baseInsert.data.id);
       return NextResponse.json({ error: "Falha ao salvar perguntas sugeridas." }, { status: 500 });
+    }
+
+    const chunkRows = chunks.map((chunk, index) => ({
+      knowledge_base_id: baseInsert.data.id,
+      chunk_index: chunk.chunkIndex,
+      chunk_text: chunk.chunkText,
+      embedding: chunkEmbeddings[index],
+    }));
+    const chunksInsert = await supabaseAdmin.from("knowledge_chunks").insert(chunkRows);
+    if (chunksInsert.error) {
+      console.error("knowledge_chunks_insert_error", chunksInsert.error);
+      await supabaseAdmin.from("knowledge_bases").delete().eq("id", baseInsert.data.id);
+      return NextResponse.json(
+        {
+          error: "Falha ao salvar chunks vetoriais da base.",
+          details: "Verifique se a migration de RAG foi aplicada no Supabase.",
+        },
+        { status: 500 },
+      );
     }
 
     return NextResponse.json({ message: "Base salva com resumo e perguntas sugeridas." });
@@ -122,6 +137,12 @@ export async function PATCH(request: Request) {
 
     const { shortSummary, usageGuidance, suggestedQuestions } = parsedOutput.data;
     const knowledgeBaseId = idParsed.data;
+    const chunks = chunkText(rawText);
+    if (chunks.length === 0) {
+      return NextResponse.json({ error: "Não foi possível gerar chunks da base de conhecimento." }, { status: 400 });
+    }
+
+    const chunkEmbeddings = await embedMany(chunks.map((chunk) => chunk.chunkText));
 
     const updateResult = await supabaseAdmin
       .from("knowledge_bases")
@@ -149,6 +170,36 @@ export async function PATCH(request: Request) {
     if (questionsInsert.error) {
       console.error("suggested_questions_reinsert_error", questionsInsert.error);
       return NextResponse.json({ error: "Falha ao salvar perguntas sugeridas atualizadas." }, { status: 500 });
+    }
+
+    const oldChunksDelete = await supabaseAdmin.from("knowledge_chunks").delete().eq("knowledge_base_id", knowledgeBaseId);
+    if (oldChunksDelete.error) {
+      console.error("knowledge_chunks_delete_error", oldChunksDelete.error);
+      return NextResponse.json(
+        {
+          error: "Falha ao atualizar chunks vetoriais da base.",
+          details: "Verifique se a migration de RAG foi aplicada no Supabase.",
+        },
+        { status: 500 },
+      );
+    }
+
+    const chunkRows = chunks.map((chunk, index) => ({
+      knowledge_base_id: knowledgeBaseId,
+      chunk_index: chunk.chunkIndex,
+      chunk_text: chunk.chunkText,
+      embedding: chunkEmbeddings[index],
+    }));
+    const chunksInsert = await supabaseAdmin.from("knowledge_chunks").insert(chunkRows);
+    if (chunksInsert.error) {
+      console.error("knowledge_chunks_reinsert_error", chunksInsert.error);
+      return NextResponse.json(
+        {
+          error: "Falha ao salvar chunks vetoriais atualizados.",
+          details: "Verifique se a migration de RAG foi aplicada no Supabase.",
+        },
+        { status: 500 },
+      );
     }
 
     return NextResponse.json({ message: "Base editada com sucesso." });
