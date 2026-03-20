@@ -11,6 +11,7 @@ type SuggestedQuestion = {
 export default function HomePage() {
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [suggestions, setSuggestions] = useState<SuggestedQuestion[]>([]);
 
@@ -32,13 +33,17 @@ export default function HomePage() {
     setLoading(true);
     setAnswer("");
     try {
+      const payload: { question: string; sessionId?: string } = { question };
+      if (sessionId) payload.sessionId = sessionId;
+
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question }),
+        body: JSON.stringify(payload),
       });
-      const data = (await response.json()) as { answer: string };
+      const data = (await response.json()) as { answer: string; sessionId?: string };
       setAnswer(data.answer ?? "Não foi possível gerar resposta.");
+      if (data.sessionId) setSessionId(data.sessionId);
     } finally {
       setLoading(false);
     }
@@ -49,7 +54,10 @@ export default function HomePage() {
       <section style={{ width: "100%", maxWidth: 720 }}>
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 24 }}>
           <h1 style={{ margin: 0, fontSize: 24 }}>Ei, Victor. Tudo pronto para começar?</h1>
-          <Link href="/knowledge">Gerenciar bases</Link>
+          <div style={{ display: "flex", gap: 16 }}>
+            <Link href="/history">Histórico</Link>
+            <Link href="/knowledge">Gerenciar bases</Link>
+          </div>
         </div>
 
         {suggestions.length > 0 && (

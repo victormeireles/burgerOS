@@ -7,6 +7,7 @@ import { getSupabaseAdmin } from "@/lib/supabase";
 
 const schema = z.object({
   question: z.string().min(2),
+  sessionId: z.string().uuid().nullish(),
 });
 
 type MatchChunkRow = {
@@ -18,14 +19,42 @@ type MatchChunkRow = {
 };
 
 export async function POST(request: Request) {
+  const supabaseAdmin = getSupabaseAdmin();
+  let questionForLog = "";
+  let sessionIdForLog: string | null = null;
+
   try {
     const parsed = schema.safeParse(await request.json());
     if (!parsed.success) {
       return NextResponse.json({ error: "Pergunta inválida." }, { status: 400 });
     }
 
-    const { question } = parsed.data;
-    const supabaseAdmin = getSupabaseAdmin();
+    const { question, sessionId } = parsed.data;
+    questionForLog = question;
+
+    if (sessionId) {
+      sessionIdForLog = sessionId;
+    } else {
+      const createdSession = await supabaseAdmin
+        .from("chat_sessions")
+        .insert({
+          title: question.slice(0, 80),
+        })
+        .select("id")
+        .single();
+
+      if (createdSession.error || !createdSession.data) {
+        console.error("chat_session_create_error", createdSession.error);
+        return NextResponse.json(
+          {
+            error: "Falha ao criar sessão de chat.",
+            details: "Verifique se a migration de histórico foi aplicada no Supabase.",
+          },
+          { status: 500 },
+        );
+      }
+      sessionIdForLog = createdSession.data.id;
+    }
 
     const questionEmbedding = await embedOne(question);
     const topK = 8;
@@ -86,7 +115,22 @@ export async function POST(request: Request) {
       completion.choices[0]?.message?.content?.trim() ??
       "Não consegui gerar resposta neste momento. Tente novamente em alguns segundos.";
 
+    const logSuccess = await supabaseAdmin.from("chat_messages").insert({
+      session_id: sessionIdForLog,
+      question_text: question,
+      answer_text: answer,
+      status: "success",
+      metadata: {
+        retrievedChunks: chunks.length,
+        topSimilarity: chunks[0]?.similarity ?? null,
+      },
+    });
+    if (logSuccess.error) {
+      console.error("chat_message_success_log_error", logSuccess.error);
+    }
+
     return NextResponse.json({
+      sessionId: sessionIdForLog,
       answer,
       metadata: {
         retrievedChunks: chunks.length,
@@ -96,6 +140,20 @@ export async function POST(request: Request) {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Erro interno desconhecido.";
     console.error("chat_route_unhandled_error", error);
+
+    if (questionForLog && sessionIdForLog) {
+      const logError = await supabaseAdmin.from("chat_messages").insert({
+        session_id: sessionIdForLog,
+        question_text: questionForLog,
+        status: "error",
+        error_message: message,
+        metadata: {},
+      });
+      if (logError.error) {
+        console.error("chat_message_error_log_error", logError.error);
+      }
+    }
+
     return NextResponse.json({ error: "Erro interno ao gerar resposta do chat.", details: message }, { status: 500 });
   }
 }
