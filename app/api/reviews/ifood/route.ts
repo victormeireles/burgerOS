@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server';
+import axios from 'axios';
+import * as cheerio from 'cheerio';
 
 export async function POST(req: Request) {
   try {
@@ -8,32 +10,41 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "URL do iFood obrigatória" }, { status: 400 });
     }
 
-    // Chamada para o Apify (yasmany.casanova/ifood-scraper)
-    const response = await fetch(`https://api.apify.com/v2/acts/yasmany.casanova~ifood-scraper/runs?token=${process.env.APIFY_TOKEN}`, {
-      method: 'POST',
+    // Configurando headers para simular um navegador real
+    const response = await axios.get(ifoodUrl, {
       headers: {
-        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7'
       },
-      body: JSON.stringify({ 
-        "startUrls": [{ "url": ifoodUrl }],
-        "maxReviews": 50 
-      })
+      timeout: 15000 // 15 segundos de timeout
     });
 
-    const data = await response.json();
-
-    if (!response.ok) {
-      return NextResponse.json({ error: "Falha ao iniciar o scraper" }, { status: response.status });
-    }
+    const $ = cheerio.load(response.data);
+    
+    // ATENÇÃO: Os seletores do iFood mudam. 
+    // Tentaremos buscar os reviews baseados em padrões de texto.
+    const reviews: string[] = [];
+    
+    // Exemplo de seletor genérico (precisará de ajuste fino)
+    $('div, p').each((_, el) => {
+        const text = $(el).text().trim();
+        if (text.length > 20 && text.length < 300) {
+            reviews.push(text);
+        }
+    });
 
     return NextResponse.json({ 
       success: true, 
-      message: "Scraper iniciado com sucesso", 
-      runId: data.data.id 
+      count: reviews.length,
+      reviews: reviews.slice(0, 10) // Enviando 10 amostras
     });
 
   } catch (error: any) {
-    console.error("API Route Error:", error);
-    return NextResponse.json({ error: "Erro interno: " + error.message }, { status: 500 });
+    console.error("Scraper Error:", error);
+    return NextResponse.json({ 
+      error: "O iFood bloqueou a requisição ou a página mudou.",
+      details: error.message 
+    }, { status: 500 });
   }
 }

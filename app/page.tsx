@@ -57,6 +57,7 @@ export default function HomePage() {
           <div style={{ display: "flex", gap: 16 }}>
             <Link href="/history">Histórico</Link>
             <Link href="/knowledge">Gerenciar bases</Link>
+            <Link href="/admin/scraper">Scraper</Link>
           </div>
         </div>
 
