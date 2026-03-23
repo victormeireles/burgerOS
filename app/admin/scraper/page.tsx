@@ -7,11 +7,13 @@ export default function ScraperPage() {
   const [url, setUrl] = useState("");
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(false);
+  const [results, setResults] = useState<string[]>([]);
 
   async function startScraping() {
     if (!url.trim()) return;
     setLoading(true);
-    setStatus("Iniciando coleta...");
+    setStatus("Coletando reviews...");
+    setResults([]);
     try {
       const response = await fetch("/api/reviews/ifood", {
         method: "POST",
@@ -20,13 +22,14 @@ export default function ScraperPage() {
       });
       const data = await response.json();
       if (data.success) {
-        setStatus(`Sucesso! Run ID: ${data.runId}. Verifique o progresso no Apify.`);
+        setStatus(`Sucesso! Foram encontrados ${data.count} trechos.`);
+        setResults(data.reviews || []);
       } else {
         setStatus(`Erro: ${data.error || "Algo deu errado"}`);
       }
     } catch (e: any) {
       console.error(e);
-      setStatus(`Erro de conexão: ${e.message || "Verifique o console do navegador"}`);
+      setStatus(`Erro de conexão: ${e.message || "Verifique o console"}`);
     } finally {
       setLoading(false);
     }
@@ -57,6 +60,13 @@ export default function ScraperPage() {
         <div style={{ marginTop: 20, padding: 15, background: "#1a1a1a", border: "1px solid #333", borderRadius: 8, color: "#aaa" }}>
           {status}
         </div>
+      )}
+      {results.length > 0 && (
+        <ul style={{ marginTop: 20 }}>
+          {results.map((r, i) => (
+            <li key={i} style={{ marginBottom: 10, padding: 10, borderBottom: "1px solid #333" }}>{r}</li>
+          ))}
+        </ul>
       )}
     </main>
   );
